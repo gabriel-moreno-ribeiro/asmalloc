@@ -1,65 +1,40 @@
 # asmalloc
 
-A memory allocator written from scratch in x86-64 assembly (NASM, Linux):
-`malloc`, `free`, `calloc` and `realloc` on top of the `brk` and `mmap`
-system calls, with a free list, block splitting, coalescing of neighbours,
-16-byte alignment and a spinlock for threads. It builds as a static object
-for the tests and as a shared library you can `LD_PRELOAD` under real
-programs.
+Um alocador de memória em assembly x86-64 (NASM, Linux): `malloc`, `free`, `calloc` e `realloc` em cima de `brk` e `mmap`, com free list, divisão de blocos, coalescência de vizinhos, alinhamento de 16 bytes e um spinlock pra threads. Compila como objeto estático pros testes e como biblioteca compartilhada que você pode injetar com `LD_PRELOAD` em programa de verdade.
+
+Esse foi o mais assustador de começar e o mais satisfatório de terminar. Ver o `ls` rodando com um malloc que eu escrevi em assembly é uma sensação que eu recomendo.
 
 ```sh
 make            # nasm + cc
-make test       # C test harness against the my_* entry points
-make preload    # runs ls, sort and python with the assembly allocator underneath
+make test       # harness em C contra os pontos de entrada my_*
+make preload    # roda ls, sort e python com o alocador em assembly por baixo
 
 LD_PRELOAD=./libasmalloc.so ls -la
 ```
 
-## How it works
-
-Each block starts with a 16-byte header:
+## Como um bloco é
 
 ```
-+0   size       total size of the block (header included); bit 0 = in use, bit 1 = mmap
-+8   prev_size  size of the block before this one (0 for the first block)
-+16  payload    16-byte aligned; free blocks keep next/prev free-list pointers here
++0   size       tamanho total do bloco (com header); bit 0 = em uso, bit 1 = mmap
++8   prev_size  tamanho do bloco anterior (0 pro primeiro)
++16  payload    alinhado em 16; blocos livres guardam next/prev da free list aqui
 ```
 
-- **Heap**: the first call asks the kernel for the current break, aligns
-  it, and every time the free list has nothing big enough the heap grows by
-  `brk` in 64 KiB steps (or more for a single large request).
-- **malloc**: rounds the request up to a multiple of 16, walks the doubly
-  linked free list first-fit, unlinks the block, and splits off the tail as a
-  new free block when at least 32 bytes are left over.
-- **free**: clears the in-use bit, merges with the following block if it is
-  free (unlinking it), merges with the previous block using `prev_size` if
-  that one is free, fixes the `prev_size` of whatever follows, and pushes the
-  result on the free list. Adjacent free blocks therefore never coexist.
-- **realloc**: returns the same pointer when the block is already big
-  enough, grows in place by absorbing a free neighbour when it can, and
-  otherwise allocates, copies with `rep movsb` and frees.
-- **calloc**: multiplies with overflow detection, then zeroes with `rep stosb`.
-- **Large requests** (128 KiB and up) get a private anonymous `mmap` region
-  with the mmap bit set in the header, and are returned with `munmap`.
-- **Threads**: an `xchg`-based spinlock (with `pause`) guards the heap
-  structures, so the shared library works under multithreaded programs.
-- `my_heap_stats` walks the heap and reports bytes and block counts; the
-  tests use it to prove that frees coalesce back into one block.
+- **Heap**: a primeira chamada pede o break atual, alinha, e toda vez que a free list não tem nada grande o suficiente o heap cresce por `brk` em passos de 64 KiB (ou mais pra um pedido grande).
+- **malloc**: arredonda pra múltiplo de 16, anda na free list duplamente ligada por first-fit, desliga o bloco e divide o resto como bloco livre novo quando sobram pelo menos 32 bytes.
+- **free**: limpa o bit de uso, funde com o bloco seguinte se estiver livre, funde com o anterior usando `prev_size` se estiver livre, conserta o `prev_size` de quem vem depois e empurra na free list. Dois blocos livres adjacentes nunca coexistem.
+- **realloc**: mesmo ponteiro se já cabe, cresce no lugar absorvendo um vizinho livre quando dá, senão aloca, copia com `rep movsb` e libera.
+- **calloc**: multiplica com detecção de overflow e zera com `rep stosb`.
+- **Pedidos grandes** (128 KiB pra cima) ganham uma região `mmap` própria com o bit de mmap no header e voltam com `munmap`.
+- **Threads**: spinlock com `xchg` (e `pause`) guardando as estruturas.
+- `my_heap_stats` anda no heap e reporta bytes e blocos; os testes usam isso pra provar que os frees voltam a virar um bloco só.
 
-The assembly follows the System V AMD64 calling convention and is
-position-independent (`default rel`), which is what lets the same source
-become a `.so` with `malloc`/`free`/`calloc`/`realloc` exported when
-assembled with `-DSHARED`.
+Segue a convenção System V AMD64 e é position-independent (`default rel`), que é o que permite o mesmo fonte virar `.so` exportando `malloc`/`free`/`calloc`/`realloc` quando montado com `-DSHARED`.
 
-## Tests
+O bug que mais demorei pra achar: `realloc(NULL, n)` tem que se comportar como `malloc(n)`, e a minha primeira versão passava o tamanho no registrador errado. Só apareceu rodando o `python` com `LD_PRELOAD`, e achei escrevendo um wrapper em C que logava cada chamada.
 
-`tests/test_alloc.c` checks alignment and non-overlap, reuse and coalescing
-via heap statistics, splitting, `calloc` zeroing and overflow, every
-`realloc` path (shrink, grow in place, move, NULL, zero), the `mmap` path for
-large blocks, a randomised stress test with content verification, and eight
-threads allocating concurrently. `make preload` then runs real programs
-with the allocator injected.
+Testes: `tests/test_alloc.c` (alinhamento, reuso e coalescência via estatísticas, divisão, `calloc` zerando e overflow, todos os caminhos do `realloc`, o caminho de `mmap`, stress aleatório com verificação de conteúdo, oito threads concorrentes) e `make preload`.
 
-## License
+---
 
-MIT
+**EN:** a memory allocator in x86-64 NASM assembly for Linux: first-fit free list with splitting and coalescing over a `brk` heap, `mmap` for large blocks, 16-byte alignment, `realloc` growing in place, `calloc` with overflow checks and an `xchg` spinlock, exported as a `LD_PRELOAD`-able shared library that runs real programs. C test harness plus multithreaded stress tests. MIT.
