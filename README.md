@@ -1,5 +1,7 @@
 # asmalloc
 
+> 🇺🇸 [English version below](#english)
+
 Um alocador de memória em assembly x86-64 (NASM, Linux): `malloc`, `free`, `calloc` e `realloc` em cima de `brk` e `mmap`, com free list, divisão de blocos, coalescência de vizinhos, alinhamento de 16 bytes e um spinlock pra threads. Compila como objeto estático pros testes e como biblioteca compartilhada que você pode injetar com `LD_PRELOAD` em programa de verdade.
 
 Esse foi o mais assustador de começar e o mais satisfatório de terminar. Ver o `ls` rodando com um malloc que eu escrevi em assembly é uma sensação que eu recomendo.
@@ -37,4 +39,41 @@ Testes: `tests/test_alloc.c` (alinhamento, reuso e coalescência via estatístic
 
 ---
 
-**EN:** a memory allocator in x86-64 NASM assembly for Linux: first-fit free list with splitting and coalescing over a `brk` heap, `mmap` for large blocks, 16-byte alignment, `realloc` growing in place, `calloc` with overflow checks and an `xchg` spinlock, exported as a `LD_PRELOAD`-able shared library that runs real programs. C test harness plus multithreaded stress tests. MIT.
+## English
+
+A memory allocator in x86-64 assembly (NASM, Linux): `malloc`, `free`, `calloc` and `realloc` on top of `brk` and `mmap`, with a free list, block splitting, coalescing of neighbours, 16-byte alignment and a spinlock for threads. Builds as a static object for the tests and as a shared library you can inject with `LD_PRELOAD` into real programs.
+
+This was the scariest one to start and the most satisfying to finish. Watching `ls` run with a malloc I wrote in assembly is a feeling I recommend.
+
+```sh
+make            # nasm + cc
+make test       # C harness against the my_* entry points
+make preload    # runs ls, sort and python with the assembly allocator underneath
+
+LD_PRELOAD=./libasmalloc.so ls -la
+```
+
+## What a block looks like
+
+```
++0   size       total block size (header included); bit 0 = in use, bit 1 = mmap
++8   prev_size  size of the previous block (0 for the first one)
++16  payload    16-aligned; free blocks keep the free list's next/prev here
+```
+
+- **Heap**: the first call asks for the current break, aligns it, and every time the free list has nothing big enough the heap grows through `brk` in 64 KiB steps (or more for a large request).
+- **malloc**: rounds up to a multiple of 16, walks the doubly linked free list first-fit, unlinks the block and splits the remainder as a new free block when at least 32 bytes are left.
+- **free**: clears the in-use bit, merges with the next block if it's free, merges with the previous one using `prev_size` if it's free, fixes the `prev_size` of whoever comes after and pushes onto the free list. Two adjacent free blocks never coexist.
+- **realloc**: same pointer if it already fits, grows in place absorbing a free neighbour when possible, otherwise allocates, copies with `rep movsb` and frees.
+- **calloc**: multiplies with overflow detection and zeroes with `rep stosb`.
+- **Large requests** (128 KiB and up) get their own `mmap` region with the mmap bit in the header and go back with `munmap`.
+- **Threads**: a spinlock with `xchg` (and `pause`) guarding the structures.
+- `my_heap_stats` walks the heap and reports bytes and blocks; the tests use it to prove the frees turn back into a single block.
+
+Follows the System V AMD64 convention and is position-independent (`default rel`), which is what lets the same source become a `.so` exporting `malloc`/`free`/`calloc`/`realloc` when assembled with `-DSHARED`.
+
+The bug that took me the longest to find: `realloc(NULL, n)` has to behave like `malloc(n)`, and my first version passed the size in the wrong register. It only showed up running `python` with `LD_PRELOAD`, and I found it by writing a C wrapper that logged every call.
+
+Tests: `tests/test_alloc.c` (alignment, reuse and coalescing via the stats, splitting, `calloc` zeroing and overflow, every `realloc` path, the `mmap` path, random stress with content verification, eight concurrent threads) and `make preload`.
+
+MIT.
